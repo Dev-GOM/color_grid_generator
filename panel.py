@@ -95,6 +95,7 @@ class COLORGRID_PT_main(bpy.types.Panel):
         # Bake button
         row = box.row()
         row.scale_y = 1.5
+        row.alert = props.needs_bake  # Red color when needs bake
         row.operator("colorgrid.bake_grid", text="Bake Color Map", icon='RENDER_STILL')
 
         # Open in editor
@@ -117,6 +118,14 @@ class COLORGRID_PT_main(bpy.types.Panel):
         row = box.row()
         row.scale_y = 1.3
         row.operator("colorgrid.auto_uv_layout", text="Auto UV Layout", icon='UV_SYNC_SELECT')
+
+        # Quick Setup (one-click workflow)
+        layout.separator()
+        box = layout.box()
+        box.label(text="Quick Setup", icon='AUTO')
+        row = box.row()
+        row.scale_y = 1.5
+        row.operator("colorgrid.quick_setup", text="Import → Bake → UV Layout", icon='PLAY')
 
 
 classes = (

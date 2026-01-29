@@ -12,6 +12,7 @@ A Blender extension for creating color map textures for Unity and other game eng
 - **Auto Backup**: Creates backup before overwriting existing images
 - **Material Creation**: One-click material setup with color map connected to Principled BSDF
 - **Auto UV Layout**: Automatically arrange UVs to match material colors with grid cells
+- **Quick Setup**: One-click workflow (Import Colors → Bake → UV Layout)
 
 ## Requirements
 
@@ -75,6 +76,7 @@ Set the number of columns and rows in the color grid.
 - **Create Color Material**: Create a new material with the color map connected
 
 ### UV Layout
+- **Quick Setup**: One-click workflow that performs Import Material Colors → Bake Color Map → Auto UV Layout
 - **Auto UV Layout**: Automatically project UV and arrange faces to match material colors with grid cells
   - Supports multiple UV projection methods: Smart UV Project, Cube, Cylinder, Sphere, or use existing UV
   - Matches material base colors to grid cell colors

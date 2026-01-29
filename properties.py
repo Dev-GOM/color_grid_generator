@@ -184,6 +184,10 @@ def _on_color_change(self, context):
     # Mark as set when color is changed via UI
     self.is_set = True
 
+    # Mark grid as needing bake
+    if hasattr(context, 'scene') and hasattr(context.scene, 'color_grid'):
+        context.scene.color_grid.needs_bake = True
+
     # Schedule end of session (resets after 0.5s of no changes)
     _schedule_end_of_session()
 
@@ -277,6 +281,13 @@ class ColorGridProperties(bpy.types.PropertyGroup):
         name="Show Grid",
         description="Show the color grid in the panel",
         default=True
+    )
+
+    # Bake state tracking
+    needs_bake: BoolProperty(
+        name="Needs Bake",
+        description="Grid has been modified since last bake",
+        default=False
     )
 
 

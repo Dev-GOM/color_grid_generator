@@ -106,6 +106,7 @@ class COLORGRID_OT_set_cell_color(bpy.types.Operator):
         try:
             cell.color = tuple(self.cell_color)
             cell.is_set = True
+            props.needs_bake = True
         finally:
             set_skip_color_update(False)
 
@@ -147,6 +148,7 @@ class COLORGRID_OT_clear_cell(bpy.types.Operator):
         try:
             cell.color = (0.0, 0.0, 0.0, 1.0)
             cell.is_set = False
+            props.needs_bake = True
         finally:
             set_skip_color_update(False)
 
@@ -275,6 +277,9 @@ class COLORGRID_OT_fill_grid(bpy.types.Operator):
                     cell.is_set = True
                     count += 1
 
+            if count > 0:
+                props.needs_bake = True
+
             save_color_grid_json(context)
             self.report({'INFO'}, f"Filled {count} cells")
             return {'FINISHED'}
@@ -338,6 +343,9 @@ class COLORGRID_OT_randomize_grid(bpy.types.Operator):
                     cell.is_set = True
                     count += 1
 
+            if count > 0:
+                props.needs_bake = True
+
             save_color_grid_json(context)
             self.report({'INFO'}, f"Randomized {count} cells")
             return {'FINISHED'}
@@ -384,6 +392,8 @@ class COLORGRID_OT_clear_grid(bpy.types.Operator):
             for cell in props.cells:
                 cell.color = (0.0, 0.0, 0.0, 1.0)
                 cell.is_set = False
+
+            props.needs_bake = True
 
             save_color_grid_json(context)
             self.report({'INFO'}, "Grid cleared")
@@ -488,6 +498,9 @@ class COLORGRID_OT_bake_grid(bpy.types.Operator):
 
         # Save JSON metadata
         self._save_json(context, output_path)
+
+        # Mark as baked (no longer needs bake)
+        props.needs_bake = False
 
         # Refresh existing images in editors
         existing_img = bpy.data.images.get(img_name)
@@ -625,6 +638,9 @@ class COLORGRID_OT_import_material_colors(bpy.types.Operator):
                 props.cells[empty_idx].is_set = True
                 existing_colors.append((empty_idx, color))
                 added_count += 1
+
+            if added_count > 0:
+                props.needs_bake = True
 
             save_color_grid_json(context)
         finally:
@@ -1067,6 +1083,12 @@ class COLORGRID_OT_auto_uv_layout(bpy.types.Operator):
         default='SMART'
     )
 
+    bake_first: bpy.props.BoolProperty(
+        name="Bake Before UV Layout",
+        description="Bake the color map before applying UV layout",
+        default=True
+    )
+
     @classmethod
     def poll(cls, context):
         props = context.scene.color_grid
@@ -1078,10 +1100,22 @@ class COLORGRID_OT_auto_uv_layout(bpy.types.Operator):
         return len(props.cells) == expected_cells
 
     def invoke(self, context, event):
+        props = context.scene.color_grid
+        # Check if bake is needed
+        self._needs_bake = props.needs_bake
+        self.bake_first = props.needs_bake
         return context.window_manager.invoke_props_dialog(self, width=300)
 
     def draw(self, context):
         layout = self.layout
+
+        # Show warning if needs bake
+        if hasattr(self, '_needs_bake') and self._needs_bake:
+            box = layout.box()
+            box.alert = True
+            box.label(text="Grid has unsaved changes!", icon='ERROR')
+            box.prop(self, "bake_first", text="Bake color map first")
+
         layout.prop(self, "uv_method")
 
     def execute(self, context):
@@ -1095,6 +1129,13 @@ class COLORGRID_OT_auto_uv_layout(bpy.types.Operator):
             bpy.ops.ed.undo_push(message="Before Auto UV Layout")
         except Exception:
             pass
+
+        # Bake first if requested
+        if self.bake_first and props.needs_bake:
+            result = bpy.ops.colorgrid.bake_grid()
+            if result != {'FINISHED'}:
+                self.report({'ERROR'}, "Failed to bake color map")
+                return {'CANCELLED'}
 
         # Store original mode
         original_mode = obj.mode
@@ -1322,8 +1363,51 @@ class COLORGRID_OT_auto_uv_layout(bpy.types.Operator):
         if original_mode != 'OBJECT':
             bpy.ops.object.mode_set(mode=original_mode)
 
+        # Open UV Editor with the baked image
+        self._open_uv_editor(context)
+
         self.report({'INFO'}, f"UV layout complete: {processed_count} faces processed, {len(material_to_cell)} materials matched")
         return {'FINISHED'}
+
+    def _open_uv_editor(self, context):
+        """Open UV Editor with the color map image"""
+        props = context.scene.color_grid
+        output_path = bpy.path.abspath(props.output_path)
+
+        if not output_path or not os.path.exists(output_path):
+            return
+
+        # Get or load the image
+        img_name = os.path.basename(output_path)
+        img = bpy.data.images.get(img_name)
+        if not img:
+            try:
+                img = bpy.data.images.load(output_path)
+            except Exception:
+                return
+
+        # Find existing image editor area
+        for area in context.screen.areas:
+            if area.type == 'IMAGE_EDITOR':
+                space = area.spaces.active
+                space.image = img
+                space.mode = 'UV'
+                return
+
+        # No image editor found, try to split VIEW_3D
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                with context.temp_override(area=area):
+                    bpy.ops.screen.area_split(direction='VERTICAL', factor=0.5)
+
+                for new_area in context.screen.areas:
+                    if new_area.type == 'VIEW_3D' and new_area != area:
+                        new_area.type = 'IMAGE_EDITOR'
+                        space = new_area.spaces.active
+                        space.image = img
+                        space.mode = 'UV'
+                        break
+                return
 
     def _get_base_color_linear(self, material):
         """Extract base color from material in linear color space"""
@@ -1384,6 +1468,85 @@ class COLORGRID_OT_auto_uv_layout(bpy.types.Operator):
             return best_match
 
         return None
+
+
+class COLORGRID_OT_quick_setup(bpy.types.Operator):
+    """One-click setup: Import Material Colors → Bake Color Map → Auto UV Layout"""
+    bl_idname = "colorgrid.quick_setup"
+    bl_label = "Quick Setup"
+    bl_description = "Import colors from materials, bake color map, and auto layout UVs in one click"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    uv_method: bpy.props.EnumProperty(
+        name="UV Projection",
+        description="UV projection method to use",
+        items=[
+            ('SMART', "Smart UV Project", "Use Smart UV Project"),
+            ('CUBE', "Cube Projection", "Use Cube Projection"),
+            ('CYLINDER', "Cylinder Projection", "Use Cylinder Projection"),
+            ('SPHERE', "Sphere Projection", "Use Sphere Projection"),
+            ('EXISTING', "Use Existing UV", "Keep existing UV, only rearrange"),
+        ],
+        default='SMART'
+    )
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.color_grid
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            return False
+        # Grid must be initialized
+        expected_cells = props.grid_cols * props.grid_rows
+        if len(props.cells) != expected_cells:
+            return False
+        # Must have materials
+        return len(obj.data.materials) > 0
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=300)
+
+    def draw(self, context):
+        layout = self.layout
+
+        box = layout.box()
+        box.label(text="Quick Setup will:", icon='INFO')
+        col = box.column(align=True)
+        col.label(text="1. Import Material Colors")
+        col.label(text="2. Bake Color Map")
+        col.label(text="3. Auto UV Layout")
+
+        layout.separator()
+        layout.prop(self, "uv_method")
+
+    def execute(self, context):
+        props = context.scene.color_grid
+
+        # Push undo
+        try:
+            bpy.ops.ed.undo_push(message="Before Quick Setup")
+        except Exception:
+            pass
+
+        # Step 1: Import Material Colors
+        result = bpy.ops.colorgrid.import_material_colors()
+        if result != {'FINISHED'}:
+            self.report({'WARNING'}, "Import Material Colors had issues, continuing...")
+
+        # Step 2: Bake Color Map
+        result = bpy.ops.colorgrid.bake_grid()
+        if result != {'FINISHED'}:
+            self.report({'ERROR'}, "Failed to bake color map")
+            return {'CANCELLED'}
+
+        # Step 3: Auto UV Layout (with bake_first=False since we just baked)
+        result = bpy.ops.colorgrid.auto_uv_layout(uv_method=self.uv_method, bake_first=False)
+        if result != {'FINISHED'}:
+            self.report({'ERROR'}, "Failed to apply UV layout")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, "Quick Setup complete!")
+        return {'FINISHED'}
 
 
 class COLORGRID_OT_open_folder(bpy.types.Operator):
@@ -1447,6 +1610,7 @@ classes = (
     COLORGRID_OT_load_grid,
     COLORGRID_OT_create_material,
     COLORGRID_OT_auto_uv_layout,
+    COLORGRID_OT_quick_setup,
     COLORGRID_OT_open_folder,
 )
 
