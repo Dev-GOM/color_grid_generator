@@ -2,7 +2,7 @@ schema_version = "1.0.0"
 
 id = "color_grid_generator"
 name = "Color Grid Generator"
-version = "1.0.0"
+version = "1.0.1"
 tagline = "Generate color grid textures for Unity and other game engines"
 maintainer = "DevGOM"
 type = "add-on"

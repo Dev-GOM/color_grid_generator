@@ -864,6 +864,20 @@ class COLORGRID_OT_load_grid(bpy.types.Operator, ImportHelper):
         """Load grid by sampling average colors from image regions"""
         props = context.scene.color_grid
 
+        # Check for companion JSON file to get is_set values
+        json_path = os.path.splitext(filepath)[0] + '.json'
+        json_is_set = {}
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    json_data = json.load(f)
+                    for cell_data in json_data.get('cells', []):
+                        row = cell_data.get('row', 0)
+                        col = cell_data.get('col', 0)
+                        json_is_set[(row, col)] = cell_data.get('is_set', False)
+            except Exception:
+                pass
+
         # Load image
         try:
             img = bpy.data.images.load(filepath)
@@ -927,7 +941,14 @@ class COLORGRID_OT_load_grid(bpy.types.Operator, ImportHelper):
 
                 # Apply to cell
                 props.cells[cell_idx].color = (r, g, b, a)
-                props.cells[cell_idx].is_set = True
+
+                # Use is_set from JSON if available, otherwise check if not black
+                if json_is_set:
+                    props.cells[cell_idx].is_set = json_is_set.get((row, col), False)
+                else:
+                    # If no JSON, consider non-black colors as "set"
+                    is_black = (r < 0.01 and g < 0.01 and b < 0.01)
+                    props.cells[cell_idx].is_set = not is_black
 
         # Update output path
         props.output_path = filepath
