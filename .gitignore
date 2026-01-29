@@ -180,3 +180,4 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 color_grid_generator-1.0.0.zip
+/.test
