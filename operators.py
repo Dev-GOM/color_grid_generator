@@ -707,29 +707,30 @@ class COLORGRID_OT_open_image(bpy.types.Operator):
         else:
             img = bpy.data.images.load(output_path)
 
-        # Find or create image editor area
+        # Find existing image editor area
         for area in context.screen.areas:
             if area.type == 'IMAGE_EDITOR':
                 area.spaces.active.image = img
                 self.report({'INFO'}, f"Opened: {img_name}")
                 return {'FINISHED'}
 
-        # No image editor found, try to split
+        # No image editor found, try to split VIEW_3D
         for area in context.screen.areas:
             if area.type == 'VIEW_3D':
                 with context.temp_override(area=area):
                     bpy.ops.screen.area_split(direction='VERTICAL', factor=0.5)
-                break
 
-        # Set the new area to image editor
-        for area in context.screen.areas:
-            if area.type == 'VIEW_3D':
-                area.type = 'IMAGE_EDITOR'
-                area.spaces.active.image = img
-                break
+                for new_area in context.screen.areas:
+                    if new_area.type == 'VIEW_3D' and new_area != area:
+                        new_area.type = 'IMAGE_EDITOR'
+                        new_area.spaces.active.image = img
+                        break
 
-        self.report({'INFO'}, f"Opened: {img_name}")
-        return {'FINISHED'}
+                self.report({'INFO'}, f"Opened: {img_name}")
+                return {'FINISHED'}
+
+        self.report({'WARNING'}, "Could not open image editor")
+        return {'CANCELLED'}
 
 
 class COLORGRID_OT_open_uv(bpy.types.Operator):
@@ -754,7 +755,7 @@ class COLORGRID_OT_open_uv(bpy.types.Operator):
         else:
             img = bpy.data.images.load(output_path)
 
-        # Find or create UV editor area
+        # Find existing image editor area
         for area in context.screen.areas:
             if area.type == 'IMAGE_EDITOR':
                 space = area.spaces.active
@@ -763,24 +764,25 @@ class COLORGRID_OT_open_uv(bpy.types.Operator):
                 self.report({'INFO'}, f"Opened in UV Editor: {img_name}")
                 return {'FINISHED'}
 
-        # No image editor found, try to split
+        # No image editor found, try to split VIEW_3D
         for area in context.screen.areas:
             if area.type == 'VIEW_3D':
                 with context.temp_override(area=area):
                     bpy.ops.screen.area_split(direction='VERTICAL', factor=0.5)
-                break
 
-        # Set the new area to UV editor
-        for area in context.screen.areas:
-            if area.type == 'VIEW_3D':
-                area.type = 'IMAGE_EDITOR'
-                space = area.spaces.active
-                space.image = img
-                space.mode = 'UV'
-                break
+                for new_area in context.screen.areas:
+                    if new_area.type == 'VIEW_3D' and new_area != area:
+                        new_area.type = 'IMAGE_EDITOR'
+                        space = new_area.spaces.active
+                        space.image = img
+                        space.mode = 'UV'
+                        break
 
-        self.report({'INFO'}, f"Opened in UV Editor: {img_name}")
-        return {'FINISHED'}
+                self.report({'INFO'}, f"Opened in UV Editor: {img_name}")
+                return {'FINISHED'}
+
+        self.report({'WARNING'}, "Could not open UV Editor")
+        return {'CANCELLED'}
 
 
 class COLORGRID_OT_load_grid(bpy.types.Operator, ImportHelper):
@@ -1045,6 +1047,345 @@ class COLORGRID_OT_create_material(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class COLORGRID_OT_auto_uv_layout(bpy.types.Operator):
+    """Automatically layout UVs to match material colors with grid cells"""
+    bl_idname = "colorgrid.auto_uv_layout"
+    bl_label = "Auto UV Layout"
+    bl_description = "Project UV and arrange to match material colors with grid cells"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    uv_method: bpy.props.EnumProperty(
+        name="UV Projection",
+        description="UV projection method to use",
+        items=[
+            ('SMART', "Smart UV Project", "Use Smart UV Project"),
+            ('CUBE', "Cube Projection", "Use Cube Projection"),
+            ('CYLINDER', "Cylinder Projection", "Use Cylinder Projection"),
+            ('SPHERE', "Sphere Projection", "Use Sphere Projection"),
+            ('EXISTING', "Use Existing UV", "Keep existing UV, only rearrange"),
+        ],
+        default='SMART'
+    )
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.color_grid
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            return False
+        # Grid must be initialized
+        expected_cells = props.grid_cols * props.grid_rows
+        return len(props.cells) == expected_cells
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=300)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "uv_method")
+
+    def execute(self, context):
+        import bmesh
+
+        props = context.scene.color_grid
+        obj = context.active_object
+
+        # Push undo
+        try:
+            bpy.ops.ed.undo_push(message="Before Auto UV Layout")
+        except Exception:
+            pass
+
+        # Store original mode
+        original_mode = obj.mode
+
+        # Go to object mode first
+        if obj.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        # Apply UV projection
+        if self.uv_method != 'EXISTING':
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='SELECT')
+
+            if self.uv_method == 'SMART':
+                bpy.ops.uv.smart_project(angle_limit=66.0, island_margin=0.02)
+            elif self.uv_method == 'CUBE':
+                bpy.ops.uv.cube_project(cube_size=1.0)
+            elif self.uv_method == 'CYLINDER':
+                bpy.ops.uv.cylinder_project()
+            elif self.uv_method == 'SPHERE':
+                bpy.ops.uv.sphere_project()
+
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        # Load JSON to get cell colors
+        output_path = bpy.path.abspath(props.output_path)
+        json_path = os.path.splitext(output_path)[0] + '.json' if output_path else None
+
+        # Build cell color lookup from props
+        cell_colors = []
+        for idx, cell in enumerate(props.cells):
+            if cell.is_set:
+                row = idx // props.grid_cols
+                col = idx % props.grid_cols
+                cell_colors.append({
+                    'row': row,
+                    'col': col,
+                    'color': (cell.color[0], cell.color[1], cell.color[2])
+                })
+
+        if not cell_colors:
+            self.report({'WARNING'}, "No colors set in grid")
+            return {'CANCELLED'}
+
+        # Get mesh data
+        mesh = obj.data
+
+        # Ensure we have UV layer
+        if not mesh.uv_layers:
+            mesh.uv_layers.new(name="UVMap")
+        uv_layer = mesh.uv_layers.active
+
+        # Build material color lookup
+        material_colors = {}
+        for mat_idx, mat in enumerate(mesh.materials):
+            if mat is None:
+                continue
+            color = self._get_base_color_linear(mat)
+            if color:
+                material_colors[mat_idx] = color
+
+        if not material_colors:
+            self.report({'WARNING'}, "No materials with base color found")
+            return {'CANCELLED'}
+
+        # Match materials to grid cells
+        material_to_cell = {}
+        for mat_idx, mat_color in material_colors.items():
+            best_cell = self._find_matching_cell(mat_color, cell_colors)
+            if best_cell:
+                material_to_cell[mat_idx] = best_cell
+
+        if not material_to_cell:
+            self.report({'WARNING'}, "No material colors matched grid cells")
+            return {'CANCELLED'}
+
+        # Use bmesh for UV manipulation
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        bm.faces.ensure_lookup_table()
+
+        uv_layer_bm = bm.loops.layers.uv.verify()
+
+        # Group faces by material
+        faces_by_material = {}
+        for face in bm.faces:
+            mat_idx = face.material_index
+            if mat_idx in material_to_cell:
+                if mat_idx not in faces_by_material:
+                    faces_by_material[mat_idx] = []
+                faces_by_material[mat_idx].append(face)
+
+        # Process each material group
+        processed_count = 0
+        for mat_idx, faces in faces_by_material.items():
+            cell_info = material_to_cell[mat_idx]
+            row = cell_info['row']
+            col = cell_info['col']
+
+            # Calculate cell UV bounds
+            # UV coordinates: u goes 0-1 left to right, v goes 0-1 bottom to top
+            cell_u_min = col / props.grid_cols
+            cell_u_max = (col + 1) / props.grid_cols
+            # Row 0 is top of grid, but in UV v=1 is top
+            cell_v_max = 1.0 - (row / props.grid_rows)
+            cell_v_min = 1.0 - ((row + 1) / props.grid_rows)
+
+            # Add small margin inside cell
+            margin = 0.02
+            cell_u_min += margin
+            cell_u_max -= margin
+            cell_v_min += margin
+            cell_v_max -= margin
+
+            # Collect all UV coordinates for this material's faces
+            all_uvs = []
+            for face in faces:
+                for loop in face.loops:
+                    uv = loop[uv_layer_bm].uv
+                    all_uvs.append(uv)
+
+            if not all_uvs:
+                continue
+
+            # Find current UV bounds
+            u_min = min(uv.x for uv in all_uvs)
+            u_max = max(uv.x for uv in all_uvs)
+            v_min = min(uv.y for uv in all_uvs)
+            v_max = max(uv.y for uv in all_uvs)
+
+            current_width = u_max - u_min
+            current_height = v_max - v_min
+
+            # Calculate scale to fit in cell (maintaining aspect ratio)
+            cell_width = cell_u_max - cell_u_min
+            cell_height = cell_v_max - cell_v_min
+
+            if current_width > 0 and current_height > 0:
+                scale_u = cell_width / current_width
+                scale_v = cell_height / current_height
+                scale = min(scale_u, scale_v)  # Uniform scale to maintain aspect
+            else:
+                scale = 1.0
+
+            # Calculate center offset
+            current_center_u = (u_min + u_max) / 2
+            current_center_v = (v_min + v_max) / 2
+            cell_center_u = (cell_u_min + cell_u_max) / 2
+            cell_center_v = (cell_v_min + cell_v_max) / 2
+
+            # Transform all UVs
+            for face in faces:
+                for loop in face.loops:
+                    uv = loop[uv_layer_bm].uv
+                    # Scale around center
+                    new_u = (uv.x - current_center_u) * scale + cell_center_u
+                    new_v = (uv.y - current_center_v) * scale + cell_center_v
+                    uv.x = new_u
+                    uv.y = new_v
+
+            processed_count += len(faces)
+
+        # Write back to mesh
+        bm.to_mesh(mesh)
+        bm.free()
+
+        # Store old materials for removal
+        old_materials = [mat for mat in mesh.materials if mat is not None]
+
+        # Clear all material slots
+        mesh.materials.clear()
+
+        # Create new color material
+        output_path = bpy.path.abspath(props.output_path)
+        if output_path and os.path.exists(output_path):
+            # Get or load the image
+            img_name = os.path.basename(output_path)
+            img = bpy.data.images.get(img_name)
+
+            if img:
+                img.reload()
+            else:
+                img = bpy.data.images.load(output_path)
+
+            # Create new material
+            mat_name = "Color_Map"
+            mat = bpy.data.materials.new(name=mat_name)
+            mat.use_nodes = True
+
+            # Get node tree
+            nodes = mat.node_tree.nodes
+            links = mat.node_tree.links
+
+            # Clear default nodes
+            nodes.clear()
+
+            # Create Principled BSDF
+            principled = nodes.new('ShaderNodeBsdfPrincipled')
+            principled.location = (0, 0)
+
+            # Create Image Texture node
+            tex_node = nodes.new('ShaderNodeTexImage')
+            tex_node.location = (-300, 0)
+            tex_node.image = img
+
+            # Create Material Output
+            output_node = nodes.new('ShaderNodeOutputMaterial')
+            output_node.location = (300, 0)
+
+            # Link Image Texture to Principled BSDF Base Color
+            links.new(tex_node.outputs['Color'], principled.inputs['Base Color'])
+
+            # Link Principled BSDF to Material Output
+            links.new(principled.outputs['BSDF'], output_node.inputs['Surface'])
+
+            # Add material to object
+            mesh.materials.append(mat)
+
+        # Remove old materials that are no longer used by any object
+        for old_mat in old_materials:
+            if old_mat.users == 0:
+                bpy.data.materials.remove(old_mat)
+
+        # Restore original mode
+        if original_mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode=original_mode)
+
+        self.report({'INFO'}, f"UV layout complete: {processed_count} faces processed, {len(material_to_cell)} materials matched")
+        return {'FINISHED'}
+
+    def _get_base_color_linear(self, material):
+        """Extract base color from material in linear color space"""
+        if material.use_nodes and material.node_tree:
+            for node in material.node_tree.nodes:
+                if node.type == 'BSDF_PRINCIPLED':
+                    base_color_input = node.inputs.get('Base Color')
+                    if base_color_input and not base_color_input.is_linked:
+                        color = base_color_input.default_value
+                        return (color[0], color[1], color[2])
+                elif node.type == 'BSDF_DIFFUSE':
+                    color_input = node.inputs.get('Color')
+                    if color_input and not color_input.is_linked:
+                        color = color_input.default_value
+                        return (color[0], color[1], color[2])
+
+        if hasattr(material, 'diffuse_color'):
+            color = material.diffuse_color
+            return (color[0], color[1], color[2])
+
+        return None
+
+    def _linear_to_srgb(self, value):
+        """Convert linear color value to sRGB"""
+        value = max(0.0, min(1.0, value))
+        if value <= 0.0031308:
+            return value * 12.92
+        else:
+            return 1.055 * (value ** (1.0 / 2.4)) - 0.055
+
+    def _find_matching_cell(self, mat_color_linear, cell_colors, tolerance=0.05):
+        """Find grid cell matching material color"""
+        # Convert material color from linear to sRGB for comparison
+        mat_color_srgb = (
+            self._linear_to_srgb(mat_color_linear[0]),
+            self._linear_to_srgb(mat_color_linear[1]),
+            self._linear_to_srgb(mat_color_linear[2])
+        )
+
+        best_match = None
+        best_distance = float('inf')
+
+        for cell in cell_colors:
+            cell_color = cell['color']
+            # Calculate color distance
+            distance = (
+                (mat_color_srgb[0] - cell_color[0]) ** 2 +
+                (mat_color_srgb[1] - cell_color[1]) ** 2 +
+                (mat_color_srgb[2] - cell_color[2]) ** 2
+            ) ** 0.5
+
+            if distance < best_distance:
+                best_distance = distance
+                best_match = cell
+
+        # Only return if within tolerance
+        if best_distance <= tolerance * 1.732:  # sqrt(3) for max RGB distance
+            return best_match
+
+        return None
+
+
 class COLORGRID_OT_open_folder(bpy.types.Operator):
     """Open the output folder in file explorer"""
     bl_idname = "colorgrid.open_folder"
@@ -1105,6 +1446,7 @@ classes = (
     COLORGRID_OT_open_uv,
     COLORGRID_OT_load_grid,
     COLORGRID_OT_create_material,
+    COLORGRID_OT_auto_uv_layout,
     COLORGRID_OT_open_folder,
 )
 

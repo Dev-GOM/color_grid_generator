@@ -110,6 +110,14 @@ class COLORGRID_PT_main(bpy.types.Panel):
         row.scale_y = 1.3
         row.operator("colorgrid.create_material", text="Create Color Material", icon='NODE_MATERIAL')
 
+        # UV Layout
+        layout.separator()
+        box = layout.box()
+        box.label(text="UV Layout", icon='UV')
+        row = box.row()
+        row.scale_y = 1.3
+        row.operator("colorgrid.auto_uv_layout", text="Auto UV Layout", icon='UV_SYNC_SELECT')
+
 
 classes = (
     COLORGRID_PT_main,

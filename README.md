@@ -11,6 +11,7 @@ A Blender extension for creating color map textures for Unity and other game eng
 - **Bake to PNG**: Export color maps with automatic JSON metadata
 - **Auto Backup**: Creates backup before overwriting existing images
 - **Material Creation**: One-click material setup with color map connected to Principled BSDF
+- **Auto UV Layout**: Automatically arrange UVs to match material colors with grid cells
 
 ## Requirements
 
@@ -41,6 +42,7 @@ mklink /D "%APPDATA%\Blender Foundation\Blender\4.5\extensions\user_default\colo
    - Use **Fill** or **Randomize** for bulk operations
 5. Set output path and click **Bake Color Map** to export
 6. Use **Create Color Material** to create a material with the color map
+7. Use **Auto UV Layout** to arrange object UVs to match material colors with grid cells
 
 ## Panel Overview
 
@@ -71,6 +73,14 @@ Set the number of columns and rows in the color grid.
 
 ### Material
 - **Create Color Material**: Create a new material with the color map connected
+
+### UV Layout
+- **Auto UV Layout**: Automatically project UV and arrange faces to match material colors with grid cells
+  - Supports multiple UV projection methods: Smart UV Project, Cube, Cylinder, Sphere, or use existing UV
+  - Matches material base colors to grid cell colors
+  - Scales and positions UV islands to fit within corresponding grid cells
+  - Faces with the same material share the same cell position (overlapped)
+  - Faces without materials are left unchanged
 
 ## File Outputs
 
